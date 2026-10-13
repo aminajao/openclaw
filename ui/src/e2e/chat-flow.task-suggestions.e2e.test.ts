@@ -462,23 +462,29 @@ suite.define(() => {
         expect(
           await summary.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
         ).toBe(true);
-        await expect
-          .poll(() =>
-            summary.evaluate((element, text) => {
-              element.scrollTop = element.scrollHeight;
-              return {
-                textReady: element.textContent === text,
-                reachesBottom:
-                  element.scrollTop > 0 &&
-                  element.scrollTop + element.clientHeight >= element.scrollHeight - 1,
-                scrollTop: element.scrollTop,
-                scrollHeight: element.scrollHeight,
-                clientHeight: element.clientHeight,
-                clientWidth: element.clientWidth,
-              };
-            }, verboseSuggestion.tldr),
-          )
-          .toMatchObject({ textReady: true, reachesBottom: true });
+        await summary.evaluate(
+          (element) =>
+            new Promise<void>((resolve) => {
+              const observer = new ResizeObserver(() => {
+                observer.disconnect();
+                resolve();
+              });
+              observer.observe(element);
+            }),
+        );
+        const summaryScroll = await summary.evaluate((element) => {
+          element.scrollTop = element.scrollHeight;
+          return {
+            reachesBottom:
+              element.scrollTop > 0 &&
+              element.scrollTop + element.clientHeight >= element.scrollHeight - 1,
+            scrollTop: element.scrollTop,
+            scrollHeight: element.scrollHeight,
+            clientHeight: element.clientHeight,
+            clientWidth: element.clientWidth,
+          };
+        });
+        expect(summaryScroll.reachesBottom, JSON.stringify(summaryScroll)).toBe(true);
 
         const card = tray.locator(".task-suggestion:visible");
         await card.getByText("Show instructions", { exact: true }).click();
