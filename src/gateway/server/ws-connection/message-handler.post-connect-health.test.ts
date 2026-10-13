@@ -177,7 +177,8 @@ vi.mock("../../../config/config.js", () => ({
 vi.mock("../../../config/io.js", () => ({
   getRuntimeConfig: loadConfigMock,
 }));
-vi.mock("../../../infra/system-presence.js", () => ({
+vi.mock("../../../infra/system-presence.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../infra/system-presence.js")>()),
   commitPresence: commitPresenceMock,
   upsertPresence: upsertPresenceMock,
   listSystemPresence: vi.fn(() => []),
