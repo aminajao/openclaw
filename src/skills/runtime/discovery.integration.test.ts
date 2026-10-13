@@ -1,15 +1,18 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { getTrackedWorkerPoolSnapshot } from "../../infra/worker-cpu.js";
 import { WorkerTaskPool } from "../../infra/worker-task-pool.js";
 import { resolveSkillDiscoveryLimits } from "../loading/skill-root-discovery.js";
 import type { WorkspaceSkillSourceRequest } from "../loading/workspace-skill-sources.types.js";
 import { writeSkill } from "../test-support/e2e-test-helpers.js";
+import * as remoteRefresh from "./refresh-remote.js";
 import { getSkillsResourceVersion, getSkillsSnapshotVersion } from "./refresh-state.js";
 import {
   closeSkillsWatchers,
+  ensureSkillsWatcher,
   prepareLocalSkillSources,
   prepareSkillSourcePlan,
   projectSkillSnapshot,
@@ -155,6 +158,63 @@ it("batches fresh agent discovery without separate root-planning passes", async 
     tasks.mockRestore();
   }
 });
+
+it.each([false, true])(
+  "joins a concurrent reset before source registration (selected: %s)",
+  async (selected) => {
+    await write("Current instructions");
+    const disposalEntered = createDeferred();
+    const disposalReleased = createDeferred();
+    const resetEntered = createDeferred();
+    const resetReleased = createDeferred();
+    const dispose = remoteRefresh.disposeRemoteSkillsWatcher;
+    const close = remoteRefresh.closeRemoteSkillsWatchers;
+    vi.spyOn(remoteRefresh, "disposeRemoteSkillsWatcher").mockImplementationOnce(
+      async (...args) => {
+        await dispose(...args);
+        disposalEntered.resolve();
+        await disposalReleased.promise;
+      },
+    );
+    vi.spyOn(remoteRefresh, "closeRemoteSkillsWatchers").mockImplementationOnce(async () => {
+      await close();
+      resetEntered.resolve();
+      await resetReleased.promise;
+    });
+    let settled = false;
+    const read = ensureSkillsWatcher({
+      workspaceDir: workspace,
+      ...(selected ? { sourcePlan: request().sourcePlan } : {}),
+    });
+    void read.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    let reset: Promise<void> | undefined;
+    try {
+      await disposalEntered.promise;
+      reset = refreshSkillsDiscovery({ reason: "config-change" });
+      await resetEntered.promise;
+      disposalReleased.resolve();
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(settled).toBe(false);
+      resetReleased.resolve();
+      await Promise.all([read, reset]);
+      expect(await descriptions()).toEqual(["Current instructions"]);
+    } finally {
+      disposalReleased.resolve();
+      resetReleased.resolve();
+      await Promise.allSettled([read, reset]);
+      vi.restoreAllMocks();
+    }
+  },
+);
 
 it("keeps each source environment while refreshing a reused worker's plans and prompt paths", async () => {
   const firstHome = temporary.make("skills-first-home-");

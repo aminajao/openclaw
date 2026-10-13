@@ -206,7 +206,10 @@ function scanDirtySources(): Promise<void> {
   return state.pending;
 }
 
-function registerSource(selection: SkillsDiscoverySourceSelection, watch?: boolean) {
+async function registerSource(selection: SkillsDiscoverySourceSelection, watch?: boolean) {
+  if (state.closing) {
+    await state.closing;
+  }
   const environment = selection.plan?.input.environment ?? captureSkillsDiscoveryEnvironment();
   const { request } = selection;
   const key = JSON.stringify(
@@ -247,14 +250,14 @@ function registerSource(selection: SkillsDiscoverySourceSelection, watch?: boole
   return { key, source };
 }
 
-function readRegisteredSource({ key, source }: ReturnType<typeof registerSource>) {
+function readRegisteredSource({ key, source }: Awaited<ReturnType<typeof registerSource>>) {
   if (state.sources.get(key) !== source || !source.sources) {
     throw new Error("Skills discovery was retired before publication");
   }
   return source.sources;
 }
 
-async function publishRegisteredSource(registration: ReturnType<typeof registerSource>) {
+async function publishRegisteredSource(registration: Awaited<ReturnType<typeof registerSource>>) {
   const { source } = registration;
   if (source.dirty || !source.sources || state.pending) {
     await scanDirtySources();
@@ -267,11 +270,8 @@ export async function prepareLocalSkillSources(
   request: WorkspaceSkillSourceRequest,
   options: { watch?: boolean; plan?: SkillsDiscoverySourceSelection["plan"] } = {},
 ): Promise<WorkspaceSkillSources> {
-  if (state.closing) {
-    await state.closing;
-  }
   return publishRegisteredSource(
-    registerSource({ kind: "selected", request, plan: options.plan }, options.watch),
+    await registerSource({ kind: "selected", request, plan: options.plan }, options.watch),
   );
 }
 
