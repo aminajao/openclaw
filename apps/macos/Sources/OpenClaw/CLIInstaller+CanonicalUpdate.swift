@@ -73,13 +73,16 @@ extension CLIInstaller {
         var receipt: PostAppUpdateReceipt {
             switch self {
             case let .notRequired(receipt), let .repaired(receipt):
-                return receipt
+                receipt
             case let .superseded(receipt, _, _):
                 // Continue live reconciliation without replaying an obsolete notice or
                 // claiming core repair. Never acknowledge the CLI's recovery ledger here.
-                return PostAppUpdateReceipt(
-                    fromVersion: receipt.fromVersion, toVersion: receipt.toVersion, recordedAt: receipt.recordedAt,
-                    runtimeBuildID: receipt.runtimeBuildID, setupRecovery: true)
+                PostAppUpdateReceipt(
+                    fromVersion: receipt.fromVersion,
+                    toVersion: receipt.toVersion,
+                    recordedAt: receipt.recordedAt,
+                    runtimeBuildID: receipt.runtimeBuildID,
+                    setupRecovery: true)
             }
         }
 

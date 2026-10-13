@@ -157,6 +157,7 @@ final class GatewayProcessManager {
     var gatewayStartGeneration: UInt64 = 0 {
         didSet { self.canonicalUpdateStage = nil }
     }
+
     var gatewayStartTask: Task<Void, Never>?
     private var gatewayStartTaskGeneration: UInt64?
     private var gatewayStartTaskID: UUID?

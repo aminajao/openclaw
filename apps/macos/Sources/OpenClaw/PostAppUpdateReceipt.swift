@@ -202,9 +202,14 @@ enum PostAppUpdateReceiptStore {
             ? pending : nil
         return self.recordCoreUpdateDispatch(
             receipt: receipt ?? PostAppUpdateReceipt(
-                fromVersion: fromVersion, toVersion: toVersion, recordedAt: now,
-                runtimeBuildID: runtimeBuildID, setupRecovery: true),
-            owner: .gateway, setupRecovery: setupRecovery, defaults: defaults)
+                fromVersion: fromVersion,
+                toVersion: toVersion,
+                recordedAt: now,
+                runtimeBuildID: runtimeBuildID,
+                setupRecovery: true),
+            owner: .gateway,
+            setupRecovery: setupRecovery,
+            defaults: defaults)
     }
 
     static func completeSetupRecovery(
@@ -311,8 +316,11 @@ enum PostAppUpdateReceiptStore {
         defaults: UserDefaults = AppDefaults.standard) -> PostAppUpdateReceipt
     {
         self.setUpdateState(
-            incomplete: incomplete, coreUpdate: receipt.coreUpdate, receipt: receipt,
-            setupRecovery: setupRecovery, defaults: defaults)
+            incomplete: incomplete,
+            coreUpdate: receipt.coreUpdate,
+            receipt: receipt,
+            setupRecovery: setupRecovery,
+            defaults: defaults)
     }
 
     private static func setUpdateState(

@@ -194,7 +194,8 @@ final class PostUpdateController: NSObject, NSWindowDelegate {
 
     func retry() {
         guard self.receipt != nil, !self.model.isWorking else { return }
-        let pendingSetup = PostAppUpdateReceiptStore.pendingSetupRecovery(currentVersion: GatewayEnvironment.appVersionString())
+        let pendingSetup = PostAppUpdateReceiptStore
+            .pendingSetupRecovery(currentVersion: GatewayEnvironment.appVersionString())
         if let pendingSetup { self.receipt = pendingSetup }
         let allowsMigration = Self.allowsNodeMigration(
             paused: AppStateStore.shared.isPaused,
@@ -296,7 +297,8 @@ final class PostUpdateController: NSObject, NSWindowDelegate {
     {
         guard BundledRuntime.isBundledApp else { return false }
         await GatewayProcessManager.shared.waitForStartupAttempt()
-        let pendingSetup = PostAppUpdateReceiptStore.pendingSetupRecovery(currentVersion: GatewayEnvironment.appVersionString())
+        let pendingSetup = PostAppUpdateReceiptStore
+            .pendingSetupRecovery(currentVersion: GatewayEnvironment.appVersionString())
         var currentReceipt = self.receipt ?? receipt
         let manager = GatewayProcessManager.shared
         if manager.nodeMigrationCompleted || manager.nodeMigrationVersionUpdated,
@@ -412,7 +414,9 @@ final class PostUpdateController: NSObject, NSWindowDelegate {
             self.model.phase = .complete
             self.model.message = connectionMode == .local
                 ? String(format: String(localized: "OpenClaw %@ and its Gateway are ready."), receipt.toVersion)
-                : String(format: String(localized: "OpenClaw %@ and its Mac node runtime are ready."), receipt.toVersion)
+                : String(
+                    format: String(localized: "OpenClaw %@ and its Mac node runtime are ready."),
+                    receipt.toVersion)
             self.model.details = nil
             PostAppUpdateReceiptStore.clear(receipt: self.receipt ?? receipt)
             self.receipt = nil
@@ -456,11 +460,13 @@ final class PostUpdateController: NSObject, NSWindowDelegate {
                 // Package recovery precedes selected-service work and notification.
                 // Neither an absent node service nor a healthy companion settles it.
                 try await checkCurrent()
-                let result: CLIInstaller.CanonicalUpdateResult
-                if let observed = manager.canonicalUpdateResult(for: receipt, generation: generation) {
-                    result = observed
+                let result: CLIInstaller.CanonicalUpdateResult = if let observed = manager.canonicalUpdateResult(
+                    for: receipt,
+                    generation: generation)
+                {
+                    observed
                 } else {
-                    result = try await CLIInstaller.repairCanonicalUpdateIfNeeded(
+                    try await CLIInstaller.repairCanonicalUpdateIfNeeded(
                         receipt: receipt,
                         checkCurrent: checkCurrent,
                         statusHandler: { [weak self] message in
@@ -659,7 +665,8 @@ final class PostUpdateController: NSObject, NSWindowDelegate {
     private func markGatewayUpdateIncomplete(receipt: PostAppUpdateReceipt) {
         let updated = PostAppUpdateReceiptStore.setGatewayUpdateIncomplete(
             true,
-            receipt: self.checkpointReceipt(receipt), setupRecovery: self.migrationOnlyLaunchCheck)
+            receipt: self.checkpointReceipt(receipt),
+            setupRecovery: self.migrationOnlyLaunchCheck)
         self.receipt = updated
     }
 
@@ -938,7 +945,8 @@ extension PostUpdateController {
             }
         }
         let usesSeededGateway = GatewayProcessManager.shared.usesSeededGateway
-        let companionVerified = GatewayProcessManager.shared.nodeMigrationCompleted || Self.currentBundledRuntimeIsReady()
+        let companionVerified = GatewayProcessManager.shared.nodeMigrationCompleted || Self
+            .currentBundledRuntimeIsReady()
         let prepareCompanion = !repairingNodeMigration && connectionMode == .remote && bundled && usesSeededGateway &&
             !companionVerified
         var context: PostUpdateRuntimeContext
@@ -1259,7 +1267,8 @@ extension PostUpdateController {
                 installedCLI: resolution.installedCLI,
                 onDispatch: {
                     self.receipt = PostAppUpdateReceiptStore.recordCoreUpdateDispatch(
-                        receipt: self.checkpointReceipt(self.receipt ?? receipt), owner: owner,
+                        receipt: self.checkpointReceipt(self.receipt ?? receipt),
+                        owner: owner,
                         setupRecovery: self.migrationOnlyLaunchCheck)
                 },
                 statusHandler: { [weak self] message in
@@ -1357,7 +1366,8 @@ extension PostUpdateController {
             } catch {
                 if error is CancellationError, AppStateStore.shared.isPaused { return .deferred }
                 self.receipt = PostAppUpdateReceiptStore.recordMigrationFailure(
-                    receipt: self.checkpointReceipt(self.receipt ?? receipt), setupRecovery: self.migrationOnlyLaunchCheck)
+                    receipt: self.checkpointReceipt(self.receipt ?? receipt),
+                    setupRecovery: self.migrationOnlyLaunchCheck)
                 self.failRuntimeMigration(error.localizedDescription)
                 return .failed
             }

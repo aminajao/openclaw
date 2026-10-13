@@ -146,7 +146,8 @@ extension GatewayProcessManager {
             let outcome = try await ManagedNodeGatewayMigration.run(
                 candidate: candidate,
                 targetVersion: targetVersion,
-                pendingSetupRecovery: self.canonicalUpdateResult(for: pending, generation: generation)?.receipt ?? pending,
+                pendingSetupRecovery: self.canonicalUpdateResult(for: pending, generation: generation)?
+                    .receipt ?? pending,
                 operations: operations)
             guard self.isCurrentGatewayStart(generation) else { throw CancellationError() }
             switch outcome {
