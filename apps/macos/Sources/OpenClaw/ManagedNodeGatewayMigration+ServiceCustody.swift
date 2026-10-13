@@ -69,7 +69,7 @@ extension ManagedNodeGatewayMigration {
         profile: AppProfile = .current,
         requireService: Bool = true) async throws -> ServiceCustody
     {
-        let state = profile.stateDirectoryURL(homeDirectory: LaunchAgentPlist.homeDirectoryURL)
+        let state = profile.stateDirectoryURL()
         let artifacts = GatewayLaunchAgentManager.generatedEnvironmentArtifacts(
             directory: state.appendingPathComponent("service-env"), profile: profile)
         let plist = GatewayLaunchAgentManager.plistURL(
@@ -101,7 +101,7 @@ extension ManagedNodeGatewayMigration {
         guard let snapshot = GatewayLaunchAgentManager.launchdConfigSnapshot() else {
             throw Failure(message: "The installed Bun service could not be inspected for recovery.")
         }
-        let state = profile.stateDirectoryURL(homeDirectory: LaunchAgentPlist.homeDirectoryURL)
+        let state = profile.stateDirectoryURL()
         let artifacts = GatewayLaunchAgentManager.generatedEnvironmentArtifacts(
             directory: state.appendingPathComponent("service-env"), profile: profile)
         let plistURL = GatewayLaunchAgentManager.plistURL(

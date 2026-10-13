@@ -280,7 +280,7 @@ enum ManagedNodeGatewayMigration {
         guard let snapshot = GatewayLaunchAgentManager.launchdConfigSnapshot() else {
             throw Failure(message: "The Gateway service changed during inspection; retry.")
         }
-        let state = profile.stateDirectoryURL(homeDirectory: LaunchAgentPlist.homeDirectoryURL)
+        let state = profile.stateDirectoryURL()
         let artifacts = GatewayLaunchAgentManager.generatedEnvironmentArtifacts(
             directory: state.appendingPathComponent("service-env"), profile: profile)
         guard CLIInstallPrompter.launchAgentUsesManagedCLI(programArguments: snapshot.programArguments),
@@ -330,21 +330,17 @@ enum ManagedNodeGatewayMigration {
         profile: AppProfile,
         retainedCLI: GatewayLaunchAgentManager.InstalledServiceCLI?) async throws -> Candidate?
     {
-        guard let intent = try retainedCLI ?? GatewayLaunchAgentManager.legacyManagedNodeCLI(
-            profile: profile, homeDirectory: LaunchAgentPlist.homeDirectoryURL)
-        else {
+        guard let intent = try retainedCLI ?? GatewayLaunchAgentManager.legacyManagedNodeCLI(profile: profile) else {
             return nil
         }
         let cli = try GatewayLaunchAgentManager.resumedServiceCLI(
             intent,
-            stateDirectory: profile.stateDirectoryURL(homeDirectory: LaunchAgentPlist.homeDirectoryURL),
+            stateDirectory: profile.stateDirectoryURL(),
             profile: profile)
         guard !cli.hadRuntimePin, let executable = cli.prefix.first,
-              GatewayLaunchAgentManager.isManagedNode(
-                  executable,
-                  stateDirectory: profile.stateDirectoryURL(homeDirectory: LaunchAgentPlist.homeDirectoryURL))
+              GatewayLaunchAgentManager.isManagedNode(executable, stateDirectory: profile.stateDirectoryURL())
         else { return nil }
-        let state = profile.stateDirectoryURL(homeDirectory: LaunchAgentPlist.homeDirectoryURL)
+        let state = profile.stateDirectoryURL()
         guard try await !GatewayLaunchAgentManager.hasRuntimePin(stateDirectory: state, profile: profile) else {
             throw Failure(message: "Gateway runtime intent changed while its service was absent; it was preserved.")
         }
@@ -387,8 +383,7 @@ enum ManagedNodeGatewayMigration {
             throw Failure(message: "The retained Gateway selection changed during its update; retry.")
         }
         guard GatewayLaunchAgentManager.launchdProgramArguments()?.isEmpty == true,
-              let refreshed = try GatewayLaunchAgentManager.legacyManagedNodeCLI(
-                  homeDirectory: LaunchAgentPlist.homeDirectoryURL)
+              let refreshed = try GatewayLaunchAgentManager.legacyManagedNodeCLI()
         else {
             throw Failure(message: "The updated Node installation could not be rediscovered; repair it first.")
         }

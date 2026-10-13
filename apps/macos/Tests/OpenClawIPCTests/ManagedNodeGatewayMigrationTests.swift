@@ -60,7 +60,8 @@ struct ManagedNodeGatewayMigrationTests {
                     self.version = receipt.toVersion
                     return .repaired(PostAppUpdateReceipt(
                         fromVersion: receipt.fromVersion, toVersion: receipt.toVersion, recordedAt: receipt.recordedAt,
-                        notificationAttempts: receipt.notificationAttempts, notificationInFlight: receipt.notificationInFlight,
+                        notificationAttempts: receipt.notificationAttempts,
+                        notificationInFlight: receipt.notificationInFlight,
                         runtimeBuildID: receipt.runtimeBuildID, setupRecovery: receipt.setupRecovery))
                 },
                 updateVersion: { _, version, setupRecovery in
@@ -290,97 +291,115 @@ struct ManagedNodeGatewayMigrationTests {
     {
         let home = try makeTempDirForTests()
         defer { try? FileManager.default.removeItem(at: home) }
-        let state = AppProfile.current.stateDirectoryURL(homeDirectory: home)
-        let oldRoot = state.appendingPathComponent("tools/node-before")
-        let newRoot = state.appendingPathComponent("tools/node-after")
+        // Only the plist home is overridable. Migration and CLI admission use the
+        // fixed, disposable test-process profile directory, like the other live fixtures.
+        let processHome = FileManager.default.homeDirectoryForCurrentUser
+        let state = AppProfile.current.stateDirectoryURL()
+        let id = UUID().uuidString
+        let oldRoot = state.appendingPathComponent("tools/node-before-\(id)")
+        let newRoot = state.appendingPathComponent("tools/node-after-\(id)")
         let alias = state.appendingPathComponent("tools/node")
         let oldEntry = oldRoot.appendingPathComponent("lib/node_modules/openclaw/openclaw.mjs")
         let newEntry = newRoot.appendingPathComponent("lib/node_modules/openclaw/dist/entry.js")
-        for (root, entry) in [(oldRoot, oldEntry), (newRoot, newEntry)] {
-            let node = root.appendingPathComponent("bin/node")
-            let package = root.appendingPathComponent("lib/node_modules/openclaw")
-            try FileManager.default.createDirectory(at: node.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try FileManager.default.createDirectory(at: entry.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data().write(to: entry)
-            try Data(#"{"name":"openclaw","version":"2026.9.6"}"#.utf8)
-                .write(to: package.appendingPathComponent("package.json"))
-            try Data("#!/bin/sh\nprintf 'OpenClaw 2026.9.6\\n'\n".utf8).write(to: node)
-            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: node.path)
-        }
-        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: oldRoot)
-        let config = state.appendingPathComponent("openclaw.json")
+        let config = home.appendingPathComponent("openclaw.json")
         try Data(#"{"gateway":{"mode":"local"}}"#.utf8).write(to: config)
         try await TestIsolation.withIsolatedState(
-            launchAgentHomeDirectory: home,
+            launchAgentHomeDirectory: processHome,
             env: ["OPENCLAW_STATE_DIR": state.path, "OPENCLAW_CONFIG_PATH": config.path, "OPENCLAW_GATEWAY_PORT": nil],
-            defaults: [cliInstallPolicyKey: "exact", connectionModeKey: "local", onboardingSeenKey: true])
-        {
-            let appState = AppStateStore.shared
-            let onboarding = appState.onboardingSeen
-            let mode = appState.connectionMode
-            appState.onboardingSeen = true
-            appState.connectionMode = .local
-            GatewayLaunchAgentManager.setTestingInterceptDaemonCommands(true)
-            GatewayLaunchAgentManager.setTestingDaemonStatusPayload("""
-            {"ok":true,"service":{"loaded":false,"runtimeIntent":{"status":"known","revision":"absent"}}}
-            """)
-            defer {
-                appState.onboardingSeen = onboarding
-                appState.connectionMode = mode
-                GatewayLaunchAgentManager.setTestingInterceptDaemonCommands(false)
-                GatewayLaunchAgentManager.setTestingDaemonStatusPayload(nil)
-            }
-            let original = try #require(try GatewayLaunchAgentManager.legacyManagedNodeCLI(homeDirectory: home))
-            var retained = original
-            let candidate = ManagedNodeGatewayMigration.Candidate(
-                cli: original, snapshot: nil, version: "2026.9.6",
-                port: GatewayEnvironment.gatewayPort(), allowUnconfigured: false)
-            var actions: [String] = []
-            var operations = ManagedNodeGatewayMigration.liveOperations(
-                checkCurrent: {}, resolveLegacyCLI: { retained },
-                verifyHealth: { actions.append("health") },
-                setServiceHosting: { current in retained = current.cli
-                    actions.append("service")
-                }, statusHandler: { _ in })
-            operations.repairCanonicalUpdate = { receipt in
-                actions.append("canonical")
-                try FileManager.default.removeItem(at: alias)
-                try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: newRoot)
-                try FileManager.default.removeItem(at: oldEntry)
-                if replaceRetained { retained = .init(prefix: ["/operator/node", "/operator/entry.js"], sqliteLibrary: nil) }
-                return .repaired(PostAppUpdateReceipt(
-                    fromVersion: receipt.fromVersion, toVersion: receipt.toVersion, recordedAt: receipt.recordedAt))
-            }
-            operations.seed = { current in
-                #expect(current.cli.prefix.last == newEntry.path)
-                actions.append("seed")
-                return BundledRuntime(root: state.appendingPathComponent("unlaunched-runtime"))
-            }
-            operations.install = { _, _ in actions.append("install") }
-            operations.restore = { _ in Issue.record("Successful recapture must not require restoration") }
-            let pending = PostAppUpdateReceipt(
-                fromVersion: "2026.8.1", toVersion: candidate.version, recordedAt: .distantPast,
-                gatewayUpdateIncomplete: true, coreUpdate: .legacyCanonical)
-            if replaceRetained {
-                await #expect(throws: ManagedNodeGatewayMigration.Failure.self) {
-                    try await ManagedNodeGatewayMigration.run(
+            defaults: [
+                cliInstallPolicyKey: "exact", connectionModeKey: "local", onboardingSeenKey: true,
+                GatewayHosting.defaultsKey: GatewayHosting.service.rawValue,
+            ]) {
+                try #require(GatewayLaunchAgentManager.launchdProgramArguments() == [])
+                try #require(!FileManager.default.fileExists(atPath: alias.path))
+                defer {
+                    for url in [alias, oldRoot, newRoot] {
+                        try? FileManager.default.removeItem(at: url)
+                    }
+                }
+                for (root, entry) in [(oldRoot, oldEntry), (newRoot, newEntry)] {
+                    let node = root.appendingPathComponent("bin/node")
+                    let package = root.appendingPathComponent("lib/node_modules/openclaw")
+                    try FileManager.default.createDirectory(
+                        at: node.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try FileManager.default.createDirectory(
+                        at: entry.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try Data().write(to: entry)
+                    try Data(#"{"name":"openclaw","version":"2026.9.6"}"#.utf8)
+                        .write(to: package.appendingPathComponent("package.json"))
+                    try Data("#!/bin/sh\nprintf 'OpenClaw 2026.9.6\\n'\n".utf8).write(to: node)
+                    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: node.path)
+                }
+                try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: oldRoot)
+                let appState = AppStateStore.shared
+                let onboarding = appState.onboardingSeen
+                let mode = appState.connectionMode
+                appState.onboardingSeen = true
+                appState.connectionMode = .local
+                GatewayLaunchAgentManager.setTestingInterceptDaemonCommands(true)
+                GatewayLaunchAgentManager.setTestingDaemonStatusPayload("""
+                {"ok":true,"service":{"loaded":false,"runtimeIntent":{"status":"known","revision":"absent"}}}
+                """)
+                defer {
+                    appState.onboardingSeen = onboarding
+                    appState.connectionMode = mode
+                    GatewayLaunchAgentManager.setTestingInterceptDaemonCommands(false)
+                    GatewayLaunchAgentManager.setTestingDaemonStatusPayload(nil)
+                }
+                let original = try #require(try GatewayLaunchAgentManager.legacyManagedNodeCLI())
+                var retained = original
+                let candidate = ManagedNodeGatewayMigration.Candidate(
+                    cli: original, snapshot: nil, version: "2026.9.6",
+                    port: GatewayEnvironment.gatewayPort(), allowUnconfigured: false)
+                var actions: [String] = []
+                var operations = ManagedNodeGatewayMigration.liveOperations(
+                    checkCurrent: {}, resolveLegacyCLI: { retained },
+                    verifyHealth: { actions.append("health") },
+                    setServiceHosting: { current in retained = current.cli
+                        actions.append("service")
+                    }, statusHandler: { _ in })
+                operations.repairCanonicalUpdate = { receipt in
+                    actions.append("canonical")
+                    try FileManager.default.removeItem(at: alias)
+                    try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: newRoot)
+                    try FileManager.default.removeItem(at: oldEntry)
+                    if replaceRetained { retained = .init(
+                        prefix: ["/operator/node", "/operator/entry.js"],
+                        sqliteLibrary: nil) }
+                    return .repaired(PostAppUpdateReceipt(
+                        fromVersion: receipt.fromVersion, toVersion: receipt.toVersion, recordedAt: receipt.recordedAt))
+                }
+                operations.seed = { current in
+                    #expect(current.cli.prefix.last == newEntry.path)
+                    actions.append("seed")
+                    return BundledRuntime(root: state.appendingPathComponent("unlaunched-runtime"))
+                }
+                operations.install = { _, _ in actions.append("install") }
+                operations.restore = { _ in Issue.record("Successful recapture must not require restoration") }
+                let pending = PostAppUpdateReceipt(
+                    fromVersion: "2026.8.1", toVersion: candidate.version, recordedAt: .distantPast,
+                    gatewayUpdateIncomplete: true, coreUpdate: .legacyCanonical)
+                if replaceRetained {
+                    await #expect(throws: ManagedNodeGatewayMigration.Failure.self) {
+                        try await ManagedNodeGatewayMigration.run(
+                            candidate: candidate, targetVersion: pending.toVersion,
+                            pendingSetupRecovery: pending, operations: operations)
+                    }
+                    #expect(actions == ["canonical"])
+                    #expect(retained.prefix.first == "/operator/node")
+                } else {
+                    let outcome = try await ManagedNodeGatewayMigration.run(
                         candidate: candidate, targetVersion: pending.toVersion,
                         pendingSetupRecovery: pending, operations: operations)
+                    guard case .migrated = outcome
+                    else { Issue.record("Expected refreshed same-version runtime migration")
+                        return
+                    }
+                    #expect(actions == ["canonical", "service", "seed", "install", "health"])
+                    #expect(retained.prefix.last == newEntry.path)
                 }
-                #expect(actions == ["canonical"])
-                #expect(retained.prefix.first == "/operator/node")
-            } else {
-                let outcome = try await ManagedNodeGatewayMigration.run(
-                    candidate: candidate, targetVersion: pending.toVersion,
-                    pendingSetupRecovery: pending, operations: operations)
-                guard case .migrated = outcome else { Issue.record("Expected refreshed same-version runtime migration")
-                    return
-                }
-                #expect(actions == ["canonical", "service", "seed", "install", "health"])
-                #expect(retained.prefix.last == newEntry.path)
+                #expect(!FileManager.default.fileExists(atPath: oldEntry.path))
             }
-            #expect(!FileManager.default.fileExists(atPath: oldEntry.path))
-        }
     }
 
     @Test func `canonical stage retains caller cancellation`() async throws {
@@ -469,7 +488,10 @@ struct ManagedNodeGatewayMigrationTests {
     }
 
     @Test(arguments: [true, false], [true, false])
-    func `same version recovery attempts core repair before runtime work`(serviceExists: Bool, repairFails: Bool) async throws {
+    func `same version recovery attempts core repair before runtime work`(
+        serviceExists: Bool,
+        repairFails: Bool) async throws
+    {
         let fixture = Fixture()
         fixture.serviceExists = serviceExists
         fixture.updateFails = repairFails
@@ -652,8 +674,8 @@ struct ManagedNodeGatewayMigrationTests {
                 PostAppUpdateReceiptStore.record(fromVersion: "2026.8.1", toVersion: "2026.9.6")
                 let dispatched = try #require(PostAppUpdateReceiptStore.pending(currentVersion: "2026.9.6"))
                 PostAppUpdateReceiptStore.recordCoreUpdateDispatch(receipt: dispatched, owner: .gateway)
-                let pending = PostAppUpdateReceiptStore.completeCoreRepair(
-                    receipt: try #require(PostAppUpdateReceiptStore.pending(
+                let pending = try PostAppUpdateReceiptStore.completeCoreRepair(
+                    receipt: #require(PostAppUpdateReceiptStore.pending(
                         currentVersion: "2026.9.6")),
                     owner: .gateway)
                 #expect(pending.hasPendingRuntimeMigration)
