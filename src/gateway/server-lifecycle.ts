@@ -508,37 +508,40 @@ export async function prepareGatewayLifecycle(params: {
     exitAfterClose = optsValue?.exitAfterClose === true;
     // Recovery and reply cancellation must precede services that join those replies.
     await markClosePreludeStarted(optsValue);
-    const preparation = await shutdownRuntime.prepareGatewayClose(
-      {
-        resolveGatewayContext: runtime.resolvePluginGatewayContext,
-        preparePluginRegistryClose: () => pluginRuntime.prepareClose(),
-        chatRunState,
-        chatAbortControllers,
-        chatQueuedTurns,
-        restartRecoveryCandidates,
-        removeChatRun,
-        agentRunSeq,
-        broadcast,
-        nodeSendToSession: (
-          sessionKey,
-          event,
-          payload,
-          opts?: Parameters<typeof nodeSendToSession>[3],
-        ) => {
-          void nodeSendToSession(sessionKey, event, payload, opts);
+    const preparation = await withPluginRuntimeRegistryScope(pluginRuntime.registry, () =>
+      shutdownRuntime.prepareGatewayClose(
+        {
+          resolveGatewayContext: runtime.resolvePluginGatewayContext,
+          preparePluginRegistryClose: () => pluginRuntime.prepareClose(),
+          chatRunState,
+          chatAbortControllers,
+          chatQueuedTurns,
+          restartRecoveryCandidates,
+          removeChatRun,
+          agentRunSeq,
+          broadcast,
+          nodeSendToSession: (
+            sessionKey,
+            event,
+            payload,
+            opts?: Parameters<typeof nodeSendToSession>[3],
+          ) => {
+            void nodeSendToSession(sessionKey, event, payload, opts);
+          },
+          resolveActiveSessionIdForKey: resolveActiveEmbeddedRunSessionId,
+          markMainSessionsAbortedForRestart: async (restart) => {
+            await shutdownRuntime.markRestartAbortedMainSessions({
+              cfg: getRuntimeConfig(),
+              ...restart,
+            });
+          },
+          getPendingReplyCount: getTotalPendingReplies,
+          disposeAllCodeModeRuns: shutdownRuntime.disposeAllCodeModeRuns,
+          updateCheckStop: runtimeState.stopGatewayUpdateCheck,
+          configReloader: { stop: stopConfigReloaderForClose },
         },
-        resolveActiveSessionIdForKey: resolveActiveEmbeddedRunSessionId,
-        markMainSessionsAbortedForRestart: async (restart) => {
-          await shutdownRuntime.markRestartAbortedMainSessions({
-            cfg: getRuntimeConfig(),
-            ...restart,
-          });
-        },
-        getPendingReplyCount: getTotalPendingReplies,
-        updateCheckStop: runtimeState.stopGatewayUpdateCheck,
-        configReloader: { stop: stopConfigReloaderForClose },
-      },
-      optsValue,
+        optsValue,
+      ),
     );
     await beginClosePrelude(optsValue);
     // Startup may still publish cleanup owners while received work settles.
@@ -603,7 +606,6 @@ export async function prepareGatewayLifecycle(params: {
               drainRetainedOpenAiEmbeddingProviders:
                 shutdownRuntime.drainRetainedOpenAiEmbeddingProviders,
               stopGmailWatcher: shutdownRuntime.stopGmailWatcher,
-              disposeAllCodeModeRuns: shutdownRuntime.disposeAllCodeModeRuns,
               closeProviderTransportDispatcherPool:
                 shutdownRuntime.closeProviderTransportDispatcherPool,
             },

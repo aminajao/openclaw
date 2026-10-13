@@ -57,7 +57,7 @@ type ShutdownResult = {
   warnings: string[];
 };
 
-function createCloseSteps(reason: string, warnings: string[]) {
+function createCloseSteps(reason: string, warnings: string[], cleanupWork: AsyncWorkScope) {
   const measureCloseStep = <T>(name: string, run: () => Promise<T> | T) =>
     measureGatewayCloseStep(`restart.close.${name}`, run, [["reason", reason]]);
   const shutdownStep = async (name: string, fn: () => Promise<void> | void, phase = name) => {
@@ -72,7 +72,29 @@ function createCloseSteps(reason: string, warnings: string[]) {
       recordShutdownWarning(warnings, name);
     }
   };
-  return { measureCloseStep, shutdownStep };
+  const disposeRuntime = async (
+    label:
+      | "plugin-services"
+      | "agent-harnesses"
+      | "bundle-mcp"
+      | "bundle-lsp"
+      | "embedding-providers",
+    dispose: () => Promise<void>,
+  ) => {
+    const disposePromise = cleanupWork
+      .track(() => measureCloseStep(label, () => Promise.resolve().then(dispose)))
+      .catch((err: unknown) => {
+        shutdownLog.warn(`${label} runtime disposal failed during shutdown: ${String(err)}`);
+        recordShutdownWarning(warnings, label);
+      });
+    if (!(await settlesWithin(disposePromise, RUNTIME_CLOSE_GRACE_MS))) {
+      shutdownLog.warn(
+        `${label} runtime disposal exceeded ${RUNTIME_CLOSE_GRACE_MS}ms; continuing shutdown`,
+      );
+      recordShutdownWarning(warnings, label);
+    }
+  };
+  return { measureCloseStep, shutdownStep, disposeRuntime };
 }
 
 export async function runGatewayClosePrelude(params: {
@@ -167,7 +189,6 @@ export type GatewayCloseParams = {
   disposeAllBundleLspRuntimes: () => Promise<void>;
   drainRetainedOpenAiEmbeddingProviders: () => Promise<void>;
   stopGmailWatcher: () => Promise<void>;
-  disposeAllCodeModeRuns: () => Promise<void> | void;
   closeProviderTransportDispatcherPool: () => Promise<void>;
   cron: { stop: () => void; stopAndDrain?: () => Promise<void> };
   stopCronMaintenance?: () => Promise<void>;
@@ -197,6 +218,7 @@ export type GatewayCloseParams = {
 };
 
 export type GatewayClosePrepareParams = GatewayRunShutdownParams & {
+  disposeAllCodeModeRuns: () => Promise<void> | void;
   preparePluginRegistryClose: ReturnType<typeof createPluginRegistryOwner>["prepareClose"];
   updateCheckStop?: (() => Promise<void> | void) | null;
   configReloader: { stop: () => Promise<void> };
@@ -221,8 +243,12 @@ export async function prepareGatewayClose(
   const { reason } = notice;
   const restartExpectedMs = notice.restartExpectedMs ?? null;
   const restart = restartExpectedMs !== null;
-  const { measureCloseStep, shutdownStep } = createCloseSteps(reason, warnings);
   const cleanupWork = new AsyncWorkScope();
+  const { measureCloseStep, shutdownStep, disposeRuntime } = createCloseSteps(
+    reason,
+    warnings,
+    cleanupWork,
+  );
   // Fence async session-state writes before the first awaited shutdown step.
   fenceSessionSuspensionWritesForGatewayShutdown();
   // Debug-level: the signal handler already announced the stop/restart at
@@ -270,6 +296,10 @@ export async function prepareGatewayClose(
         warnings,
       }),
     );
+    // Run finalizers release worktree leases; start their teardown before the
+    // close prelude joins those leases and received connection work.
+    await shutdownStep("code-mode-runs", () => params.disposeAllCodeModeRuns());
+    await disposeRuntime("agent-harnesses", disposeRegisteredAgentHarnesses);
     // ACPX owns agent-process cleanup; memory retirement must not overtake its drain.
     await shutdownStep("acp-session-manager", () => disposeAcpSessionManager("gateway-shutdown"));
     // Memory owns database borrows independent of stalled model/tool finalizers.
@@ -322,29 +352,11 @@ async function closeGatewayResources(
     resourceCleanupErrors.push(error);
   };
   let closeFailure: { error: unknown } | undefined;
-  const { measureCloseStep, shutdownStep } = createCloseSteps(reason, warnings);
-  const disposeRuntime = async (
-    label:
-      | "plugin-services"
-      | "agent-harnesses"
-      | "bundle-mcp"
-      | "bundle-lsp"
-      | "embedding-providers",
-    dispose: () => Promise<void>,
-  ) => {
-    const disposePromise = cleanupWork
-      .track(() => measureCloseStep(label, () => Promise.resolve().then(dispose)))
-      .catch((err: unknown) => {
-        shutdownLog.warn(`${label} runtime disposal failed during shutdown: ${String(err)}`);
-        recordShutdownWarning(warnings, label);
-      });
-    if (!(await settlesWithin(disposePromise, RUNTIME_CLOSE_GRACE_MS))) {
-      shutdownLog.warn(
-        `${label} runtime disposal exceeded ${RUNTIME_CLOSE_GRACE_MS}ms; continuing shutdown`,
-      );
-      recordShutdownWarning(warnings, label);
-    }
-  };
+  const { measureCloseStep, shutdownStep, disposeRuntime } = createCloseSteps(
+    reason,
+    warnings,
+    cleanupWork,
+  );
   try {
     if (params.drainActiveSessionsForShutdown) {
       await shutdownStep("session-end-drain", async () => {
@@ -383,8 +395,6 @@ async function closeGatewayResources(
         await shutdownStep(`channel/${channelId}`, () => params.stopChannel(channelId));
       }
     });
-    await shutdownStep("code-mode-runs", () => params.disposeAllCodeModeRuns());
-    await disposeRuntime("agent-harnesses", disposeRegisteredAgentHarnesses);
     await shutdownStep("ai-session-resources", () => cleanupSessionResources());
     await shutdownStep("provider-transport-dispatchers", () =>
       params.closeProviderTransportDispatcherPool(),
