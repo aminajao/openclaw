@@ -1,11 +1,14 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import type {
+  EnvironmentsListResult,
+  EnvironmentsAdoptSuggestedProfileResult,
+} from "../../../../packages/gateway-protocol/src/schema/environments.ts";
 import { readOfflineStorageScope } from "../../app/boot-record.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { hasOperatorWriteAccess } from "../../app/operator-access.ts";
 import { t } from "../../i18n/index.ts";
 import { registerNewSessionSetupEnglish } from "../../i18n/locales/en-new-session-setup.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
-import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
 import { canReadSystemInfo, readSystemInfo } from "../../lib/system-info.ts";
 import {
   SubscriptionsController,
@@ -19,6 +22,7 @@ import {
   type DraftCloudProfile,
   type DraftEnvironment,
 } from "./discovery.ts";
+import type { DraftGatewayCallbacks, DraftGatewaySnapshot } from "./draft-gateway-contract.ts";
 import {
   DraftPreferenceState,
   type SubmittedWorktreePreference,
@@ -38,48 +42,13 @@ registerNewSessionSetupEnglish();
 
 const CATALOG_RETRY_DELAYS_MS = [0, 1_000, 3_000] as const;
 
-type DraftGatewaySnapshot = Readonly<{
-  context: ApplicationContext | undefined;
-  data: NewSessionRouteData | undefined;
-  isConnected: boolean;
-  isAdmin: boolean;
-  canStartAsDraft: boolean;
-  visibility: "normal" | "draft" | "incognito";
-  cloudProfileId: string;
-  pendingPlacement: Readonly<{
-    sessionKey: string;
-    gatewayUrl: string;
-    recoveryScope: string;
-  }>;
-  agentsHydrated: boolean;
-  runtimeId: string;
-}>;
-
-export type DraftPreferenceOptions = {
-  preferenceScope?: "palette";
-  readPalettePreference?: () => PaletteSessionPreference | null;
-};
-
-type DraftGatewayCallbacks = DraftPreferenceOptions & {
-  // Read apart from the snapshot: the snapshot's place fields depend on this policy.
-  readAgents: () => ApplicationContext["agents"] | undefined;
-  requestUpdate: () => void;
-  updateComplete: () => Promise<unknown>;
-  onInvalidate: (resetHostSelection: boolean, outcome: SubmissionOutcomeReason) => void;
-  onVisibilityRetired: () => void;
-  onCloudProfileCleared: () => void;
-  onCloudState: (error: string | null) => void;
-  onPendingPlacementReset: () => void;
-  onRecoveryReady: (gatewayUrl: string, recoveryScope: string) => void;
-  onAdoptAgentDefaults: () => void;
-};
-
 export class DraftGatewayState {
   static requiredPlacement(gateway: DraftGatewayState, data: NewSessionRouteData | undefined) {
     return Boolean(gateway.requiredProfile) && !catalog.isTarget(data);
   }
 
   private cloudProfilesValue: DraftCloudProfile[] = [];
+  private suggestedProfileValue: EnvironmentsListResult["suggestedProfile"];
   private gatewayAuthorityValue = "";
   private environmentsValue: DraftEnvironment[] | null = null;
   private cloudProfilesReadyValue = false;
@@ -222,10 +191,12 @@ export class DraftGatewayState {
         ? Promise.resolve({
             profiles: readDraftCloudProfiles(required ? [required] : []),
             environments: [],
+            suggestedProfile: undefined,
           })
         : requestPlaceCatalog(client, runtimeId).then((placeCatalog) => ({
             ...placeCatalog,
             profiles: isAdmin ? placeCatalog.profiles : [],
+            suggestedProfile: isAdmin ? placeCatalog.suggestedProfile : undefined,
           }));
     this.cloudProfileComplete = result
       .then((placeCatalog) => {
@@ -236,6 +207,8 @@ export class DraftGatewayState {
         this.resetCloudProfileRetry();
         this.environmentsValue = placeCatalog.environments;
         this.applyCloudProfiles(placeCatalog.profiles);
+        this.suggestedProfileValue =
+          placeCatalog.profiles.length === 0 ? placeCatalog.suggestedProfile : undefined;
         this.cloudProfilesReadyValue = true;
       })
       .catch(() => {
@@ -265,6 +238,43 @@ export class DraftGatewayState {
 
   get cloudProfiles(): readonly DraftCloudProfile[] {
     return this.cloudProfilesValue;
+  }
+
+  get suggestedProfile(): EnvironmentsListResult["suggestedProfile"] {
+    return this.suggestedProfileValue;
+  }
+
+  async adoptSuggestedProfile(): Promise<string | undefined> {
+    const client = this.gatewayClientValue;
+    const epoch = this.gatewayConnectionEpochValue;
+    const scope = this.sessionCreateScope;
+    if (
+      !client ||
+      !this.gatewayConnectedValue ||
+      !this.read().isAdmin ||
+      !this.suggestedProfileValue
+    ) {
+      return undefined;
+    }
+    const { profile } = await client.request<EnvironmentsAdoptSuggestedProfileResult>(
+      "environments.adoptSuggestedProfile",
+      {},
+    );
+    if (
+      client !== this.gatewayClientValue ||
+      epoch !== this.gatewayConnectionEpochValue ||
+      scope !== this.sessionCreateScope ||
+      !this.gatewayConnectedValue ||
+      !this.read().isAdmin
+    ) {
+      return undefined;
+    }
+    // Retire an older catalog read before publishing the saved profile.
+    void this.readCloudProfiles();
+    this.applyCloudProfiles(readDraftCloudProfiles([profile]));
+    this.suggestedProfileValue = undefined;
+    this.callbacks.requestUpdate();
+    return profile.id;
   }
 
   /** The agent roster carries the policy, so it needs no request or wait of its own. */
@@ -473,6 +483,7 @@ export class DraftGatewayState {
     // Retire pending results synchronously before the next render can observe them.
     this.retireCloudProfiles();
     this.cloudProfilesValue = [];
+    this.suggestedProfileValue = undefined;
     this.cloudProfilesReadyValue = false;
     if (resetHostSelection) {
       this.environmentsValue = null;
@@ -601,26 +612,7 @@ export class DraftGatewayState {
   }
 
   readPreference(agentId: string): NewSessionPreference | null {
-    const snapshot = this.read();
-    if (
-      catalog.isTarget(snapshot.data) ||
-      snapshot.data?.group ||
-      snapshot.pendingPlacement.sessionKey
-    ) {
-      return null;
-    }
-    const ordinary = this.preferences.readPreference(agentId);
-    if (this.callbacks.preferenceScope !== "palette") {
-      return ordinary;
-    }
-    const palette = this.callbacks.readPalettePreference?.();
-    // Name is one-use input belonging to the foreground draft, not a default
-    // the lightweight launcher can silently borrow or consume.
-    return {
-      ...ordinary,
-      ...(palette?.agentId === normalizeAgentId(agentId) ? palette.selection : {}),
-      worktreeName: "",
-    };
+    return this.preferences.readPreference(agentId);
   }
 
   capturePreferenceConsumption(
@@ -647,6 +639,7 @@ export class DraftGatewayState {
     this.stopPreferences = undefined;
     this.identityPreferences = undefined;
     this.cloudProfilesValue = [];
+    this.suggestedProfileValue = undefined;
     this.cloudProfilesReadyValue = false;
     this.environmentsValue = null;
     this.cloudProfileRefresh = null;

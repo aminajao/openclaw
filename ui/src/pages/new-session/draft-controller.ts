@@ -10,7 +10,8 @@ import {
 } from "../../lit/subscriptions-controller.ts";
 import { reviewPrivateComposerDraft } from "../chat/components/private-composer-recovery-dialog.tsx";
 import { isTarget as isCatalogTarget } from "./catalog-target.ts";
-import { DraftGatewayState, type DraftPreferenceOptions } from "./draft-gateway-state.ts";
+import type { DraftPreferenceOptions } from "./draft-gateway-contract.ts";
+import { DraftGatewayState } from "./draft-gateway-state.ts";
 import { DraftPlaceBrowser } from "./draft-place-browser.ts";
 import { DraftPlaceState } from "./draft-place-state.ts";
 import type {
