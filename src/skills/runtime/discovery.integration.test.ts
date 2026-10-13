@@ -3,6 +3,8 @@ import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { getTrackedWorkerPoolSnapshot } from "../../infra/worker-cpu.js";
+import { WorkerTaskPool } from "../../infra/worker-task-pool.js";
+import { resolveSkillDiscoveryLimits } from "../loading/skill-root-discovery.js";
 import type { WorkspaceSkillSourceRequest } from "../loading/workspace-skill-sources.types.js";
 import { writeSkill } from "../test-support/e2e-test-helpers.js";
 import { getSkillsResourceVersion, getSkillsSnapshotVersion } from "./refresh-state.js";
@@ -111,6 +113,47 @@ it("applies config refresh on the healthy worker and drops departed sources", as
   expect(await descriptions(request(nextWorkspace))).toEqual(["Current change"]);
   await closeSkillsWatchers();
   expect(discoveryPool()).toBeUndefined();
+});
+
+it("batches fresh agent discovery without separate root-planning passes", async () => {
+  const other = temporary.make("skills-batch-agent-");
+  vi.stubEnv("OPENCLAW_BUNDLED_SKILLS_DIR", temporary.make("skills-batch-bundled-"));
+  const config = {
+    agents: { entries: { main: { workspace }, second: { workspace: other } } },
+    plugins: { enabled: false },
+  };
+  await write("Original");
+  await write("Other", other);
+  const tasks = vi.spyOn(WorkerTaskPool.prototype, "run");
+  const instructions = async (workspaceDir: string, agentId: string) => {
+    const prepared = await prepareSkillSourcePlan(workspaceDir, { config, agentId });
+    const sources = await prepareLocalSkillSources(
+      {
+        sourcePlan: prepared.plan,
+        limits: resolveSkillDiscoveryLimits(config),
+        additionalBins: [],
+      },
+      { plan: { input: prepared.input } },
+    );
+    return sources.entries.find((entry) => entry.skill.name === "guide")?.skill.description;
+  };
+  try {
+    for (const description of ["Original", "Edited"]) {
+      await write(description);
+      tasks.mockClear();
+      await refreshSkillsDiscovery({ config, reason: "config-change" });
+      expect(tasks).toHaveBeenCalledTimes(1);
+      expect(tasks).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "scan", requests: expect.any(Array) }),
+        expect.any(Object),
+      );
+      expect(await instructions(workspace, "main")).toBe(description);
+      expect(await instructions(other, "second")).toBe("Other");
+      expect(tasks).toHaveBeenCalledTimes(1);
+    }
+  } finally {
+    tasks.mockRestore();
+  }
 });
 
 it("keeps each source environment while refreshing a reused worker's plans and prompt paths", async () => {
