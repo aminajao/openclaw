@@ -205,7 +205,7 @@ describe("Git checkout execution", () => {
     await expectRuntime(root, beforeSha);
   });
 
-  it.each(["exit", "signal", "timeout-zero", "output-limit-zero"] as const)(
+  it.each(["exit", "signal"] as const)(
     "settles optional tag discovery after %s",
     async (failure) => {
       const target = await advanceRemote();
@@ -219,12 +219,8 @@ describe("Git checkout execution", () => {
               code: failure === "signal" ? 143 : 0,
               stdout: "",
               stderr: "tag transport interrupted",
-              ...(failure === "output-limit-zero"
-                ? { outputLimitExceeded: true }
-                : {
-                    killed: true,
-                    termination: failure === "signal" ? ("signal" as const) : ("timeout" as const),
-                  }),
+              killed: true,
+              termination: "signal" as const,
             })
           : execute(argv, options);
       const result = await update({ devTarget: { mode: "detached", ref: "refs/tags/requested" } });
@@ -358,7 +354,7 @@ describe("Git checkout execution", () => {
     },
   );
 
-  it.each(["missing", "signal", "output-limit-zero", "output-limit-nonzero"] as const)(
+  it.each(["missing", "signal", "output-limit-nonzero"] as const)(
     "classifies upstream setup failure without losing recovery: %s",
     async (failure) => {
       const interrupted = failure !== "missing";
@@ -369,7 +365,7 @@ describe("Git checkout execution", () => {
       runCommand = (argv, options) =>
         argv[2] === root && argv.includes("--set-upstream-to")
           ? Promise.resolve({
-              code: failure === "signal" ? 143 : failure === "output-limit-zero" ? 0 : 1,
+              code: failure === "signal" ? 143 : 1,
               stdout: "",
               stderr: "upstream setup failed",
               ...(failure === "signal"

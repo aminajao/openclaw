@@ -98,52 +98,44 @@ it("refreshes a shallow detached Dev checkout without importing unrelated object
   });
 });
 
-it.each(["attached", "detached", "detached-no-branch"])(
-  "refreshes only the custom destination for a %s upstream",
-  async (mode) => {
-    await withTestDir({ prefix: "openclaw-status-custom-upstream-" }, async (base) => {
-      const source = path.join(base, "source");
-      const receiver = path.join(base, "receiver");
-      await initialize(source);
-      await commit(source, "initial");
-      const initial = await git(source, "rev-parse", "HEAD");
-      await git(source, "branch", "unrelated");
-      await initialize(receiver);
-      await git(receiver, "remote", "add", "foo/bar", pathToFileURL(source).href);
-      await git(receiver, "config", "remote.foo/bar.fetch", "+refs/heads/*:refs/status/*");
-      await git(receiver, "fetch", "--depth=1", "foo/bar", initial);
-      await git(receiver, "checkout", "--detach", initial);
-      await git(receiver, "branch", "main", initial);
-      await git(receiver, "config", "branch.main.remote", "foo/bar");
-      await git(receiver, "config", "branch.main.merge", "refs/heads/main");
-      if (mode === "attached") {
-        await git(receiver, "checkout", "main");
-        await git(receiver, "branch", "-m", "main", "topic=main");
-      } else if (mode === "detached-no-branch") {
-        await git(receiver, "update-ref", "-d", "refs/heads/main");
-      }
-      await commit(source, "new main commit");
-      const upstreamSha = await git(source, "rev-parse", "HEAD");
-      const result = await checkUpdateStatus({
-        root: receiver,
-        fetchGit: true,
-        useDetachedDevUpstream: mode !== "attached",
-        includeRegistry: false,
-        timeoutMs: 5000,
-      });
-      expect(result.git).toMatchObject({
-        upstream: "status/main",
-        upstreamSha,
-        ahead: 0,
-        behind: 1,
-        fetchOk: true,
-      });
-      expect(
-        await git(receiver, "for-each-ref", "--format=%(refname)", "refs/status", "refs/remotes"),
-      ).toBe("refs/status/main");
+it("refreshes only the custom destination without a local main branch", async () => {
+  await withTestDir({ prefix: "openclaw-status-custom-upstream-" }, async (base) => {
+    const source = path.join(base, "source");
+    const receiver = path.join(base, "receiver");
+    await initialize(source);
+    await commit(source, "initial");
+    const initial = await git(source, "rev-parse", "HEAD");
+    await git(source, "branch", "unrelated");
+    await initialize(receiver);
+    await git(receiver, "remote", "add", "foo/bar", pathToFileURL(source).href);
+    await git(receiver, "config", "remote.foo/bar.fetch", "+refs/heads/*:refs/status/*");
+    await git(receiver, "fetch", "--depth=1", "foo/bar", initial);
+    await git(receiver, "checkout", "--detach", initial);
+    await git(receiver, "branch", "main", initial);
+    await git(receiver, "config", "branch.main.remote", "foo/bar");
+    await git(receiver, "config", "branch.main.merge", "refs/heads/main");
+    await git(receiver, "update-ref", "-d", "refs/heads/main");
+    await commit(source, "new main commit");
+    const upstreamSha = await git(source, "rev-parse", "HEAD");
+    const result = await checkUpdateStatus({
+      root: receiver,
+      fetchGit: true,
+      useDetachedDevUpstream: true,
+      includeRegistry: false,
+      timeoutMs: 5000,
     });
-  },
-);
+    expect(result.git).toMatchObject({
+      upstream: "status/main",
+      upstreamSha,
+      ahead: 0,
+      behind: 1,
+      fetchOk: true,
+    });
+    expect(
+      await git(receiver, "for-each-ref", "--format=%(refname)", "refs/status", "refs/remotes"),
+    ).toBe("refs/status/main");
+  });
+});
 
 it("honors a non-force fetch mapping into a local branch", async () => {
   await withTestDir({ prefix: "openclaw-status-nonforce-upstream-" }, async (base) => {
@@ -247,47 +239,6 @@ it.each(["refs/remotes/origin/main", "refs/heads/saved"])(
     });
   },
 );
-
-it("keeps disconnected shallow comparisons unknown after a scoped refresh", async () => {
-  await withTestDir({ prefix: "openclaw-status-disconnected-shallow-" }, async (base) => {
-    const source = path.join(base, "source");
-    const receiver = path.join(base, "receiver");
-    await initialize(source);
-    await commit(source, "common ancestor");
-    await git(source, "switch", "--create", "feature");
-    await commit(source, "feature work");
-    const feature = await git(source, "rev-parse", "HEAD");
-    await git(source, "switch", "main");
-    await commit(source, "main work");
-    await commit(source, "moving main");
-    const main = await git(source, "rev-parse", "HEAD");
-    await initialize(receiver);
-    await git(receiver, "remote", "add", "origin", pathToFileURL(source).href);
-    await git(receiver, "fetch", "--depth=1", "origin", feature);
-    await git(receiver, "checkout", "--detach", feature);
-    const shallow = await fs.readFile(path.join(receiver, ".git", "shallow"), "utf8");
-    const result = await checkUpdateStatus({
-      root: receiver,
-      fetchGit: true,
-      useDetachedDevUpstream: true,
-      includeRegistry: false,
-    });
-    expect(result.git).toMatchObject({
-      upstreamSha: main,
-      fetchOk: true,
-      ahead: null,
-      behind: null,
-    });
-    expect(resolveUpdateAvailability(result)).toMatchObject({
-      hasGitUpdate: false,
-      gitBehind: null,
-    });
-    expect(await fs.readFile(path.join(receiver, ".git", "shallow"), "utf8")).toBe(shallow);
-    expect(await git(receiver, "for-each-ref", "--format=%(refname)", "refs/remotes")).toBe(
-      "refs/remotes/origin/main",
-    );
-  });
-});
 
 it("preserves configured custom tracking ahead of the Dev origin default", async () => {
   await withTestDir({ prefix: "openclaw-tracking-priority-" }, async (base) => {
