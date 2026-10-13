@@ -150,6 +150,8 @@ One `PluginCache` starts on the first plugin metadata access, including CLI pref
 
 Plugin-aware config validation, startup auto-enable, and Gateway plugin bootstrap consume that snapshot instead of rebuilding manifest/index metadata independently. `PluginLookUpTable` is derived from the same snapshot and adds the startup plugin plan for the current runtime config.
 
+On POSIX, successful checked entry opens also publish their canonical paths to the metadata cache. Discovery reuses those facts until the owner invalidates metadata; actual file opens retain their descriptor-bound security checks. Windows keeps separate path resolution because admission can return a trusted root alias rather than the native spelling.
+
 Async config validation requests metadata when a rule or default needs it. Core-only settings do not load the plugin inventory; successful `config get` uses core redaction hints outside plugin, channel, and agent configuration, building the JSON schema only for missing-path diagnostics. Agent configuration keeps provider model-parameter schemas from plugins. Native-catalog privacy preferences still receive their plugin schema checks.
 
 When metadata is needed, preparation reads the machine-owned bundled-discovery policy and installed index together through the shared-state read worker. Metadata and ownership-lease reads load only their handlers; the general command registry stays deferred. Later reads reuse the plugin cache until its owner refreshes it. Private inspection snapshots keep their own policy facts without replacing the live process cache.
