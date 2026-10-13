@@ -2,7 +2,11 @@
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ConnectErrorDetailCodes } from "../../../../packages/gateway-protocol/src/connect-error-details.js";
-import { ErrorCodes, PROTOCOL_VERSION } from "../../../../packages/gateway-protocol/src/index.js";
+import {
+  ErrorCodes,
+  PROTOCOL_VERSION,
+  validateUpdateStatusParams,
+} from "../../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { resetDiagnosticEventsForTest } from "../../../infra/diagnostic-events.js";
@@ -468,9 +472,13 @@ describe("attachGatewayWsMessageHandler post-connect health refresh", () => {
         });
         const { updateStatusHandlers } = await import("../../server-methods/update-status.js");
         vi.mocked(handleGatewayRequest).mockImplementationOnce(async (options) => {
+          const params = options.req.params;
+          if (!validateUpdateStatusParams(params)) {
+            throw new Error("Invalid update.status fixture params");
+          }
           await updateStatusHandlers["update.status"]!({
             ...options,
-            params: options.req.params,
+            params,
             context: {
               ...options.context,
               getRuntimeConfig: () => ({ update: { channel: "stable" } }),
