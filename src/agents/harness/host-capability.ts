@@ -485,7 +485,7 @@ export function createAgentHarnessHostCapabilities(params: {
     },
     ...(annotateCurrentUserTurn ? { annotateCurrentUserTurn } : {}),
     ...media.capabilities,
-    ...bindHarnessTrajectory(attempt, assertActive, () => active),
+    ...bindHarnessTrajectory(attempt, assertActive, assertActive.assertScopeCurrent),
     preparedEnvironment: () => {
       assertActive();
       return preparedRunEnvironment;

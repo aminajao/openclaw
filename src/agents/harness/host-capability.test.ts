@@ -132,12 +132,18 @@ afterEach(() => {
 });
 
 describe("agent harness host capability", () => {
-  it.each(["host close", "run replacement", "recorder replacement"] as const)(
+  it.each([
+    "host close",
+    "run replacement",
+    "recorder replacement",
+    "admission release",
+    "lifecycle rotation",
+  ] as const)(
     "rejects trajectory cleanup after %s before and during a flush",
     async (revocation) => {
       const flushed = createDeferred();
       const recorder = { recordEvent: vi.fn(), flush: vi.fn(() => flushed.promise) };
-      const { attempt } = await admittedAttempt("run-trajectory-cleanup", {
+      const { attempt, admission } = await admittedAttempt("run-trajectory-cleanup", {
         trajectoryRecorder: recorder,
       });
       const host = createAgentHarnessHostCapabilities({ attempt, pluginId: "codex" });
@@ -152,12 +158,16 @@ describe("agent harness host capability", () => {
             ...attempt.admittedRunContext,
             operationalRunInstance: createOperationalRunInstanceRef(attempt.runId),
           };
-        } else {
+        } else if (revocation === "recorder replacement") {
           attempt.trajectoryRecorder = { recordEvent: vi.fn(), flush: vi.fn(async () => {}) };
+        } else if (revocation === "admission release") {
+          admission.close();
+        } else {
+          rotateAgentRunRegistryLifecycleGeneration();
         }
         flushed.resolve();
-        await expect(pending).rejects.toThrow("trajectory cleanup is no longer active");
-        await expect(trajectory.flush()).rejects.toThrow("trajectory cleanup is no longer active");
+        await expect(pending).rejects.toThrow("no longer active");
+        await expect(trajectory.flush()).rejects.toThrow("no longer active");
         expect(recorder.flush).toHaveBeenCalledOnce();
       } finally {
         host.close();
