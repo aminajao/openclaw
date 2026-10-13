@@ -57,7 +57,7 @@ type ShutdownResult = {
   warnings: string[];
 };
 
-function createCloseSteps(reason: string, warnings: string[], cleanupWork: AsyncWorkScope) {
+function createCloseSteps(reason: string, warnings: string[]) {
   const measureCloseStep = <T>(name: string, run: () => Promise<T> | T) =>
     measureGatewayCloseStep(`restart.close.${name}`, run, [["reason", reason]]);
   const shutdownStep = async (name: string, fn: () => Promise<void> | void, phase = name) => {
@@ -72,29 +72,7 @@ function createCloseSteps(reason: string, warnings: string[], cleanupWork: Async
       recordShutdownWarning(warnings, name);
     }
   };
-  const disposeRuntime = async (
-    label:
-      | "plugin-services"
-      | "agent-harnesses"
-      | "bundle-mcp"
-      | "bundle-lsp"
-      | "embedding-providers",
-    dispose: () => Promise<void>,
-  ) => {
-    const disposePromise = cleanupWork
-      .track(() => measureCloseStep(label, () => Promise.resolve().then(dispose)))
-      .catch((err: unknown) => {
-        shutdownLog.warn(`${label} runtime disposal failed during shutdown: ${String(err)}`);
-        recordShutdownWarning(warnings, label);
-      });
-    if (!(await settlesWithin(disposePromise, RUNTIME_CLOSE_GRACE_MS))) {
-      shutdownLog.warn(
-        `${label} runtime disposal exceeded ${RUNTIME_CLOSE_GRACE_MS}ms; continuing shutdown`,
-      );
-      recordShutdownWarning(warnings, label);
-    }
-  };
-  return { measureCloseStep, shutdownStep, disposeRuntime };
+  return { measureCloseStep, shutdownStep };
 }
 
 export async function runGatewayClosePrelude(params: {
@@ -187,6 +165,7 @@ export type GatewayCloseParams = {
   stopChannel: (name: ChannelId, accountId?: string) => Promise<void>;
   pluginServices: PluginServicesHandle | null;
   disposeAllBundleLspRuntimes: () => Promise<void>;
+  drainWorktreeRunEnd: () => Promise<void>;
   drainRetainedOpenAiEmbeddingProviders: () => Promise<void>;
   stopGmailWatcher: () => Promise<void>;
   closeProviderTransportDispatcherPool: () => Promise<void>;
@@ -244,11 +223,7 @@ export async function prepareGatewayClose(
   const restartExpectedMs = notice.restartExpectedMs ?? null;
   const restart = restartExpectedMs !== null;
   const cleanupWork = new AsyncWorkScope();
-  const { measureCloseStep, shutdownStep, disposeRuntime } = createCloseSteps(
-    reason,
-    warnings,
-    cleanupWork,
-  );
+  const { measureCloseStep, shutdownStep } = createCloseSteps(reason, warnings);
   // Fence async session-state writes before the first awaited shutdown step.
   fenceSessionSuspensionWritesForGatewayShutdown();
   // Debug-level: the signal handler already announced the stop/restart at
@@ -296,10 +271,8 @@ export async function prepareGatewayClose(
         warnings,
       }),
     );
-    // Run finalizers release worktree leases; start their teardown before the
-    // close prelude joins those leases and received connection work.
+    // Cancel code cells before received work joins their pending bridge calls.
     await shutdownStep("code-mode-runs", () => params.disposeAllCodeModeRuns());
-    await disposeRuntime("agent-harnesses", disposeRegisteredAgentHarnesses);
     // ACPX owns agent-process cleanup; memory retirement must not overtake its drain.
     await shutdownStep("acp-session-manager", () => disposeAcpSessionManager("gateway-shutdown"));
     // Memory owns database borrows independent of stalled model/tool finalizers.
@@ -352,11 +325,29 @@ async function closeGatewayResources(
     resourceCleanupErrors.push(error);
   };
   let closeFailure: { error: unknown } | undefined;
-  const { measureCloseStep, shutdownStep, disposeRuntime } = createCloseSteps(
-    reason,
-    warnings,
-    cleanupWork,
-  );
+  const { measureCloseStep, shutdownStep } = createCloseSteps(reason, warnings);
+  const disposeRuntime = async (
+    label:
+      | "plugin-services"
+      | "agent-harnesses"
+      | "bundle-mcp"
+      | "bundle-lsp"
+      | "embedding-providers",
+    dispose: () => Promise<void>,
+  ) => {
+    const disposePromise = cleanupWork
+      .track(() => measureCloseStep(label, () => Promise.resolve().then(dispose)))
+      .catch((err: unknown) => {
+        shutdownLog.warn(`${label} runtime disposal failed during shutdown: ${String(err)}`);
+        recordShutdownWarning(warnings, label);
+      });
+    if (!(await settlesWithin(disposePromise, RUNTIME_CLOSE_GRACE_MS))) {
+      shutdownLog.warn(
+        `${label} runtime disposal exceeded ${RUNTIME_CLOSE_GRACE_MS}ms; continuing shutdown`,
+      );
+      recordShutdownWarning(warnings, label);
+    }
+  };
   try {
     if (params.drainActiveSessionsForShutdown) {
       await shutdownStep("session-end-drain", async () => {
@@ -395,6 +386,7 @@ async function closeGatewayResources(
         await shutdownStep(`channel/${channelId}`, () => params.stopChannel(channelId));
       }
     });
+    await disposeRuntime("agent-harnesses", disposeRegisteredAgentHarnesses);
     await shutdownStep("ai-session-resources", () => cleanupSessionResources());
     await shutdownStep("provider-transport-dispatchers", () =>
       params.closeProviderTransportDispatcherPool(),
@@ -525,6 +517,9 @@ async function closeGatewayResources(
   } catch (error) {
     closeFailure = { error };
   } finally {
+    // Runtime shutdown releases run leases; join their final writes before
+    // registry retirement can close the workers needed to persist them.
+    await measureCloseStep("worktree-run-end", params.drainWorktreeRunEnd);
     // Grace lets independent teardown advance; raw cleanup and its descendants
     // still join before registry and shared-state retirement.
     await measureCloseStep("cleanup-work", () => cleanupWork.runWhenIdle(() => {}));

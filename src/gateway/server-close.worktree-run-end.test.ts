@@ -33,12 +33,21 @@ for (const withSibling of [false, true]) {
   }) => {
     const fixture = await createGatewayMetadataCloseFixture("gateway-worktree-execution-close");
     const disposed = createDeferred();
+    const order: string[] = [];
     let lease: Awaited<ReturnType<typeof acquireWorktreeRunLease>> | undefined;
     let closing: Promise<void> | undefined;
     try {
       const port = await fixture.reservePort();
       const server = await fixture.start(port);
       const kernel = expectDefined(fixture.kernels.get(port), "Gateway kernel");
+      kernel.pluginRuntime.registry.typedHooks.push({
+        pluginId: fixture.pluginId,
+        hookName: "gateway_stop",
+        source: "worktree-shutdown-fixture",
+        handler: async () => {
+          order.push("gateway_stop");
+        },
+      });
       withPluginRuntimeRegistryScope(kernel.pluginRuntime.registry, () =>
         registerAgentHarness({
           id: "worktree-shutdown-fixture",
@@ -48,6 +57,7 @@ for (const withSibling of [false, true]) {
             throw new Error("The shutdown fixture does not call a model");
           },
           async dispose() {
+            order.push("dispose");
             disposed.resolve();
             await lease?.release();
           },
@@ -93,6 +103,7 @@ for (const withSibling of [false, true]) {
         signal,
       );
       await withinTest(closing, signal);
+      expect(order).toEqual(["gateway_stop", "dispose"]);
       expect(disposeSibling).not.toHaveBeenCalled();
       if (sibling) {
         await withinTest(sibling.close({ reason: "sibling shutdown" }), signal);

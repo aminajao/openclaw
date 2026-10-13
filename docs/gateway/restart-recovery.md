@@ -276,8 +276,10 @@ shutdown deadline. A shorter supervisor timeout also caps requested restart wait
 An ordinary stop (including `systemctl restart` without a managed restart intent)
 gives active runs at most 20 seconds to finish before cancelling execution. Final
 chat writes, worktree lease release, checkpointing, and database close retain the
-remaining native shutdown budget. Execution runtimes are disposed before shutdown
-joins worktree leases, so a run's finalizer can release its lease. This avoids a
+remaining native shutdown budget. Shutdown settles received work and stop hooks
+before full harness disposal, then joins worktree leases before worker retirement,
+so a run's finalizer can release its lease. Code cells are cancelled before received
+work is joined. This avoids a
 lease join blocking the teardown needed to complete it. A clean database close
 also avoids a stale-lease integrity scan on the next startup; an interrupted close
 still requires that scan.
