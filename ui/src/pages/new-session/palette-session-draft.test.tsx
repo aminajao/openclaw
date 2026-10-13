@@ -223,6 +223,44 @@ describe("PaletteSessionDraft", () => {
     expect(host.querySelector('[role="switch"][aria-label="New worktree"]')).toBeNull();
   });
 
+  it("loads identities for every open agent-menu row and only the selection after closing", async () => {
+    const { host, context } = await mount({
+      agents: [
+        { id: "main", workspace: "/workspace" },
+        { id: "other", workspace: "/other" },
+      ],
+    });
+    const picker = expectDefined(
+      host.querySelector<AgentSelect>("openclaw-agent-select"),
+      "palette agent picker",
+    );
+    await picker.updateComplete;
+    for (const item of picker.querySelectorAll<HTMLElement>('[role="menuitemradio"]')) {
+      item.scrollIntoView = vi.fn();
+    }
+    const trigger = expectDefined(
+      picker.querySelector<HTMLButtonElement>(".agent-select__trigger"),
+      "agent picker trigger",
+    );
+    const menu = expectDefined(picker.querySelector(".agent-select__menu"), "agent menu");
+    const ensure = vi.mocked(context.agentIdentity.ensure);
+    await waitForSolid(() => expect(ensure).toHaveBeenLastCalledWith(["main"]));
+
+    ensure.mockClear();
+    trigger.click();
+    await waitForSolid(() => {
+      expect(menu.matches(":popover-open")).toBe(true);
+      expect(ensure).toHaveBeenLastCalledWith(["main", "other"]);
+    });
+
+    ensure.mockClear();
+    trigger.click();
+    await waitForSolid(() => {
+      expect(menu.matches(":popover-open")).toBe(false);
+      expect(ensure).toHaveBeenLastCalledWith(["main"]);
+    });
+  });
+
   it("selects a hosted workspace in palette settings without cloning or dispatching a project", async () => {
     const hosted = {
       id: "agentsapi",
