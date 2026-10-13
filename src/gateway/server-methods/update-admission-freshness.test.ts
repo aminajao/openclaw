@@ -5,9 +5,12 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as gitExec from "../../infra/git-exec.js";
 import {
   finalizeUpdateRestartSentinelRunningVersion,
+  readVerifiedGitUpdateReceipt,
   writeRestartSentinel,
 } from "../../infra/restart-sentinel.js";
 import { createGatewayUpdateLifecycle } from "../../infra/update-check-lifecycle.js";
+import { refreshGatewayUpdateStatus } from "../../infra/update-status-schedule.js";
+import { getUpdateSchedule, resetUpdateStatusState } from "../../infra/update-status-state.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { createTempHomeEnv, type TempHomeEnv } from "../../test-utils/temp-home.js";
@@ -59,6 +62,7 @@ async function git(...args: string[]) {
 }
 
 beforeEach(async () => {
+  resetUpdateStatusState();
   home = await createTempHomeEnv("openclaw-update-admission-freshness-");
   mocks.root = await fs.realpath(home.home);
   await fs.writeFile(
@@ -97,6 +101,7 @@ afterEach(async () => {
   await scheduler?.stop();
   vi.restoreAllMocks();
   await home?.restore();
+  resetUpdateStatusState();
 });
 
 async function publishReceipt(root = mocks.root, revision = sha, upstreamRef = "origin/main") {
@@ -214,3 +219,44 @@ it("rejects a pinned target that disagrees with live tracking", async () => {
   });
   expect(mocks.handoff).not.toHaveBeenCalled();
 });
+
+it.each([false, true])(
+  "uses completed discovery after a receipt source disappeared (tracking changed=%s)",
+  async (trackingChanged) => {
+    await configureCurrentSource();
+    await publishReceipt(mocks.root, sha, "refs/remotes/origin/old-stream");
+    expect(await readVerifiedGitUpdateReceipt()).toMatchObject({
+      root: mocks.root,
+      sha,
+      upstreamRef: "refs/remotes/origin/old-stream",
+    });
+    expect(await git("config", "--get", "remote.origin.fetch")).toBe(
+      "+refs/heads/*:refs/remotes/origin/*",
+    );
+    const initialized = await lifecycle.initialize();
+    expect(initialized.status.git?.upstream).toBe("refs/remotes/origin/old-stream");
+
+    await refreshGatewayUpdateStatus(() => ({ update: { channel: "dev" } }));
+    expect(getUpdateSchedule()?.install?.git?.status).toBe("current");
+    if (trackingChanged) {
+      await git("config", "branch.main.remote", "origin");
+      await git("config", "branch.main.merge", "refs/heads/old-stream");
+    }
+    const probes = vi.spyOn(gitExec, "executeGitCommand");
+    const response = await requestUpdate();
+
+    if (trackingChanged) {
+      expect(response).toMatchObject({
+        ok: false,
+        result: { reason: "update-target-upstream-mismatch", steps: [] },
+      });
+      expect(mocks.handoff).not.toHaveBeenCalled();
+    } else {
+      expect(response).toMatchObject({ ok: true });
+      expect(mocks.handoff).toHaveBeenCalledOnce();
+    }
+    expect(
+      probes.mock.calls.some(([, args]) => ["fetch", "ls-remote"].includes(args[0] ?? "")),
+    ).toBe(false);
+  },
+);
