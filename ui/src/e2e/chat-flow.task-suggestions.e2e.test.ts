@@ -466,14 +466,19 @@ suite.define(() => {
           .poll(() =>
             summary.evaluate((element, text) => {
               element.scrollTop = element.scrollHeight;
-              return (
-                element.textContent === text &&
-                element.scrollTop > 0 &&
-                element.scrollTop + element.clientHeight >= element.scrollHeight - 1
-              );
+              return {
+                textReady: element.textContent === text,
+                reachesBottom:
+                  element.scrollTop > 0 &&
+                  element.scrollTop + element.clientHeight >= element.scrollHeight - 1,
+                scrollTop: element.scrollTop,
+                scrollHeight: element.scrollHeight,
+                clientHeight: element.clientHeight,
+                clientWidth: element.clientWidth,
+              };
             }, verboseSuggestion.tldr),
           )
-          .toBe(true);
+          .toMatchObject({ textReady: true, reachesBottom: true });
 
         const card = tray.locator(".task-suggestion:visible");
         await card.getByText("Show instructions", { exact: true }).click();
