@@ -283,6 +283,31 @@ const reviewed = new Map([
 // Match lexical operation paths, not moving line numbers or whole mixed modules.
 const reviewedOperations = new Map([
   [
+    "src/config/sessions/session-accessor.sqlite-owner.ts",
+    [
+      {
+        tier: "W",
+        operations: ["assignSessionOwner"],
+        evidence:
+          "Only session-sharing-store.worker.ts executes assignSessionOwner under owner.assign; session-metadata-write.async.ts dispatches through runSessionCollaborationWrite. The accessor reexport serves fixtures. replaceSessionOwnerInTransaction retains native creation, replacement, migration, and Doctor callers.",
+      },
+    ],
+  ],
+  [
+    "src/acp/runtime/session-meta-write.native.ts",
+    [
+      {
+        tier: "T3",
+        operations: [
+          "upsertAcpSessionMetaForMaintenance",
+          "upsertAcpSessionMetaForMaintenance.publish",
+        ],
+        evidence:
+          "Only session-meta-write.ts calls this native adapter when supportsOpenClawAgentDatabaseExecution is false under exclusive schema/agent maintenance. Ordinary writes dispatch to the worker; agent-deletion cleanup supplies workerAuthority, and memory readers have no file scope for this adapter.",
+      },
+    ],
+  ],
+  [
     "src/config/sessions/session-history-eviction-candidates.ts",
     [
       {
@@ -440,7 +465,13 @@ const reviewedOperations = new Map([
         tier: "T3",
         operations: ["readSources", "writeSources"],
         evidence:
-          "Legacy provenance import/repair only: recordLegacyAcpMigrationSources is called by sqlite-import.ts, and copyLegacyAcpMigrationSourcesForRepair by sqlite-node-artifacts.ts. Runtime entry writes and clearing persist provenance with their existing node upsert; the mixed native ACP context reader remains T1.",
+          "Legacy provenance import/repair only: recordLegacyAcpMigrationSources is called by sqlite-import.ts, and copyLegacyAcpMigrationSourcesForRepair by sqlite-node-artifacts.ts. Runtime entry writes and clearing persist provenance with their existing node upsert.",
+      },
+      {
+        tier: "T3",
+        operations: ["readLegacyAcpMigrationContext"],
+        evidence:
+          "Only the exclusive-maintenance adapter session-meta-write.native.ts and state-migrations.acp-session-metadata.ts call this native wrapper. Runtime source reads use readLegacyAcpMigrationContextInDatabase in the worker; prepareLegacyAcpMigrationSourcesForEntryWrite remains mixed.",
       },
     ],
   ],
@@ -1632,6 +1663,12 @@ const reviewedOperations = new Map([
         evidence:
           "session-meta-list.ts submits acpSessions.list to the shared read worker. Batched exact-key reads are called only by session-meta-read.worker.ts; ordinary bundled entry readers await that worker and the deprecated synchronous SDK reader uses its separate single-row operation.",
       },
+      {
+        tier: "T3",
+        operations: ["upsertAcpSessionMetaRow", "deleteAcpSessionMetaRows"],
+        evidence:
+          "Mutators serve the worker kernel, exclusive-maintenance session-meta-write.native.ts, Doctor repair, and the offline migration writer. Ordinary Gateway writes use workers; selectAcpSessionRow retains its separate synchronous SDK classification.",
+      },
     ],
   ],
   [
@@ -2464,6 +2501,7 @@ const reviewedOperations = new Map([
   ],
 ]);
 const workerModules = new Set([
+  "src/config/sessions/session-suggestion-store.kernel.ts", // session-sharing-store.worker.ts owns add/claim/release/finalize; session-transcript.worker.ts owns list. The host read facade imports only its type.
   "src/boards/sqlite-board-store.kernel.ts", // Only sqlite-board-store.worker.ts executes boards.applyOps/putWidget/grant; session-history-read-operation.worker.ts owns board-snapshot/board-widget-document reads. Host imports are type-only.
   "src/infra/session-cost-usage-cache.kernel.ts", // Only session-cost-usage-worker.ts reads rollups; openclaw-agent-execution-operations.ts dispatches usageCache.writeRollup/prune in the agent execution worker. The host cache writer imports only types.
   "src/trajectory/runtime-retention.sqlite.ts", // SQL runs only through agent execution, session-history read, and entry-patch workers; runtime-retention.ts uses only the pure due/state helpers.
