@@ -63,7 +63,7 @@ function holdDatabaseAdmission(
   access: ReturnType<typeof stateOwner.captureStateDatabaseAccess>,
 ) {
   const pending = new StateDatabaseAdmissionPendingError(pathname, "Schema publication pending");
-  const assertAccessAllowed = access.assertAccessAllowed;
+  const assertAccessAllowed = access.assertAccessAllowed.bind(access);
   let held = true;
   vi.spyOn(access, "assertAccessAllowed").mockImplementation((options) => {
     if (held) {
