@@ -140,6 +140,8 @@ Failed registrations remain visible in plugin diagnostics after their contributi
 
 Gateway startup and reload yield to the event loop between plugin registrations so health probes and existing requests can run. Registration order is unchanged, and the Gateway publishes the registry only after the complete generation is ready. Each plugin's module evaluation and `register()` remain synchronous; plugins should defer expensive work to their asynchronous service lifecycle or load execution-only modules on first asynchronous use. Register callable hooks before readiness, even when their implementations load lazily.
 
+The llama.cpp plugin follows this split for setup, server management, embeddings, image descriptions, and streaming. Registration exposes its capabilities and embedding index identities immediately; the corresponding asynchronous operation loads its implementation on first use.
+
 Web-provider discovery honors exact prepared generations, including empty selections. It reuses an ordinary request-owned registry when it covers the selected providers; otherwise an empty result requires a complete inspected manifest inventory. Partial capability callbacks retain discovery of undeclared providers. Prepared cron runs and Doctor tool construction do not register the same plugins again merely to check whether web search is configured. Doctor keeps provider-specific schema normalization outside its selected tool generation.
 
 ### Plugin metadata snapshot and lookup table
