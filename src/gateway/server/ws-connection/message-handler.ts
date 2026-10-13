@@ -206,9 +206,9 @@ export function attachGatewayWsMessageHandler(params: GatewayWsMessageHandlerPar
       return;
     }
 
-    let parsed: unknown;
+    let decoded: unknown;
     try {
-      parsed = JSON.parse(rawDataToString(data));
+      decoded = JSON.parse(rawDataToString(data));
     } catch (err) {
       setHandshakeState("failed");
       setCloseCause("parse-error", { error: formatForLog(err) });
@@ -217,6 +217,7 @@ export function attachGatewayWsMessageHandler(params: GatewayWsMessageHandlerPar
       close(1007, "invalid JSON");
       return;
     }
+    const parsed = decoded;
     let helloDelivered = false;
     // Connect phases share cleanup ownership; the outer catch must release
     // any claim installed before a later phase fails.
